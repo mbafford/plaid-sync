@@ -1,0 +1,81 @@
+#!python3
+
+import sqlite3
+import json
+import datetime
+
+from typing import List, Optional, Dict
+
+from plaidapi import Transaction as PlaidTransaction
+
+def build_placeholders(list):
+    return ",".join(["?"]*len(list))
+
+class TransactionsDB():
+    def __init__(self, dbfile:str):
+        self.conn = sqlite3.connect(dbfile) 
+
+        c = self.conn.cursor()
+        c.execute("""
+            create table if not exists transactions
+                (account_id, transaction_id, created, updated, archived, plaid_json)
+            """)
+        c.execute("create unique index if not exists accounts_idx     ON transactions(account_id, transaction_id)");
+        c.execute("create unique index if not exists transactions_idx ON transactions(transaction_id)")
+
+        self.conn.commit()
+
+        # This might be needed if there's not consistent support for json_extract in sqlite3 installations
+        # this will need to be modified to support the "$.prop" syntax
+        #def json_extract(json_str, prop):
+        #    ret = json.loads(json_str).get(prop, None)
+        #    return ret
+        #self.conn.create_function("json_extract", 2, json_extract)
+
+    def get_transaction_ids(self, start_date:datetime.date, end_date:datetime.date, account_ids:List[str])->List[str]:
+        c = self.conn.cursor()
+        res = c.execute("""
+                select transaction_id from transactions
+                where json_extract(plaid_json, '$.date') between ? and ?
+                and account_id in ({PARAMS})
+                and archived is null
+            """.replace("{PARAMS}", build_placeholders(account_ids)),
+            [start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d")] + list(account_ids)
+        )
+        return [ r[0] for r in res.fetchall() ]
+
+    def archive_transactions(self, transaction_ids:List[str]):
+        c = self.conn.cursor()
+        res = c.execute("""
+                update transactions set archived = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                where archived is null
+                and transaction_id in ({PARAMS})
+            """.replace("{PARAMS}", build_placeholders(transaction_ids)), 
+            list(transaction_ids)
+        )
+
+        self.conn.commit()        
+           
+    def save_transaction(self, transaction:PlaidTransaction):
+        c = self.conn.cursor()
+        r = c.execute("""
+            insert into 
+                transactions(account_id, transaction_id, created, updated, archived, plaid_json)
+                values(?,?,strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),null,?)
+                on conflict(account_id, transaction_id) DO UPDATE
+                    set updated    = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+                        plaid_json = excluded.plaid_json
+            """, [transaction.account_id, transaction.transaction_id, json.dumps(transaction.raw_data)])
+
+        self.conn.commit()
+
+    def fetch_transactions_by_id(self, transaction_ids:List[str])->List[PlaidTransaction]:
+        c = self.conn.cursor()
+        r = c.execute("""
+            select plaid_json from transactions
+            where transaction_id in ({PARAMS})
+        """.replace("{PARAMS}", build_placeholders(transaction_ids)), list(transaction_ids))
+        return [ 
+            PlaidTransaction( json.loads(d[0]) )
+            for d in r.fetchall() 
+        ]

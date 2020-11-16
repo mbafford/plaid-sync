@@ -1,0 +1,19 @@
+[PLAID]
+client_id = XXXXXXXXXXXXX
+secret = XXXXXXXXXXXXXX
+public_key = xXXXXXXXXXXXXXXX
+environment = sandbox
+
+[plaid-sync]
+dbfile = /tmp/sandbox.db
+
+; account definitions will be added by plaid-sync
+; when --link-account step is run
+;
+; but if you already have Plaid access tokens, you
+; can add them as such:
+;
+; [Friendly Account Name]
+; access_token = XXXXXXXXXXXX
+; disabled=false 
+
