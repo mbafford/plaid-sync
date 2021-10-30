@@ -172,8 +172,8 @@ def update_account(cfg: config.Config, plaid: plaidapi.PlaidAPI, account_name: s
                 # so just ignore and proceed
                 pass
 
-        update_token = plaid.get_update_token(
-            cfg.get_account_access_token(account_name)
+        link_token = plaid.get_link_token(
+            access_token=cfg.get_account_access_token(account_name)
         )
 
         import webserver
@@ -183,7 +183,7 @@ def update_account(cfg: config.Config, plaid: plaidapi.PlaidAPI, account_name: s
             pageTitle="Update Account Credentials",
             type="update",
             accountName=account_name,
-            token=update_token,
+            token=link_token,
         )
 
         if 'public_token' not in plaid_response:

@@ -105,23 +105,34 @@ class PlaidAPI():
         )
 
     @wrap_plaid_error
-    def get_link_token(self) -> str:
+    def get_link_token(self, access_token=None) -> str:
         """
-        Calls the /link/token/createe workflow, which returns an access token
-        which can be used to initate the account linking process.
-        This token needs to be passed to the web-browser/JavaScript API for
-        providing Plaid with credentials to access an account.
+        Calls the /link/token/create workflow, which returns an access token
+        which can be used to initate the account linking process or, if an access_token
+        is provided, to update an existing linked account.
+
+        This token is used by the web-browser/JavaScript API to exchange for a public
+        token to finalize the linking process.
+
+        https://plaid.com/docs/api/tokens/#token-exchange-flow
         """
-        # return self.client.LinkToken.create({})
-        return self.client.post('/link/token/create', {
+
+        data = {
             'user': {
                 'client_user_id': 'abc123',
             },
             'client_name': 'plaid-sync',
             'country_codes': ['US'],
             'language': 'en',
-            'products': ['transactions']
-        })['link_token']
+        }
+
+        # if updating an existing account, the products field is not allowed
+        if access_token:
+            data['access_token'] = access_token
+        else:
+            data['products'] = ['transactions']            
+
+        return self.client.post('/link/token/create', data)['link_token']
 
     @wrap_plaid_error
     def exchange_public_token(self, public_token: str) -> str:
@@ -146,24 +157,7 @@ class PlaidAPI():
         })
 
     @wrap_plaid_error
-    def get_update_token(self, access_token: str) -> str:
-        """
-        Calls the /item/public_token/create workflow, which returns a
-        public token that will be good for 30 minutes. This needs to be
-        passed to the client-side JavaScript library ("Link") and the end-user
-        needs to walk through the authentication process to get a new token.
-        The resulting token will need to be "exchanged" for a new long-lived access
-        token.
-
-        This particular endpoint isn't implemented in the plaid-python API for
-        some reason...
-        """
-        return self.client.post('/item/public_token/create', {
-            'access_token': access_token,
-        })['public_token']
-
-    @wrap_plaid_error
-    def get_account_info(self, access_token:str)->AccountInfo:
+    def get_item_info(self, access_token: str)->AccountInfo:
         """
         Returns account information associated with this particular access token.
         """

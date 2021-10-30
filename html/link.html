@@ -77,11 +77,7 @@
   <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
   <script>
     var linkHandler = Plaid.create({
-      env: config.env,
-      clientName: config.clientName,
       token: config.token,
-      apiVersion: 'v2',
-      product: ['auth', 'transactions'],
       onLoad: function () {
       },
       onSuccess: function (public_token, metadata) {
