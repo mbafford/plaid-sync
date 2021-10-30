@@ -2,6 +2,7 @@
 
 import argparse
 import datetime
+from datetime import tzinfo
 import sys
 from collections import namedtuple
 
@@ -65,6 +66,7 @@ class PlaidSynchronizer:
         self.account_name = account_name
         self.access_token = access_token
         self.plaid_error  = None
+        self.item_info    = None
         self.counts       = SyncCounts(0,0,0,0,0,0)
 
     def add_transactions(self, transactions):
@@ -76,16 +78,14 @@ class PlaidSynchronizer:
     def count_pending(self, tids):
         return len([tid for tid in tids if self.transactions.get(tid) and self.transactions[tid].pending])
 
-    def sync(self, start_date, end_date, fetch_account_info=True, fetch_balances=True, verbose=False):
+    def sync(self, start_date, end_date, fetch_balances=True, verbose=False):
         try:
             if verbose:
                 print("Account: %s" % self.account_name)
+                print("    Fetching item (bank login) info")
+            self.item_info = self.plaid.get_item_info(self.access_token)
 
-            if fetch_account_info:
-                if verbose:
-                    print("    Fetching account info")
-                account_info = self.plaid.get_account_info(self.access_token)
-
+            balances = None
             if fetch_balances:
                 if verbose:
                     print("     Fetching current balances")
@@ -132,13 +132,19 @@ class PlaidSynchronizer:
                 print("    Archiving %d transactions" % (len(tids_to_archive)))
 
             if len(tids_to_archive) > 0:
-                self.db.archive_transactions( list(tids_to_archive) )
+                self.db.archive_transactions(list(tids_to_archive))
 
             if verbose:
-                print("    Saving %d transactions" % (len(tids_new)))
+                print("    Saving %d balances, %d transactions" % (len(balances), len(tids_new)))
+
+            self.db.save_item_info(self.item_info)
+
+            if balances:
+                for balance in balances:
+                    self.db.save_balance(self.item_info.item_id, balance)
 
             for tid in tids_new:
-                self.db.save_transaction( self.transactions[tid] )
+                self.db.save_transaction(self.transactions[tid])
 
         except plaidapi.PlaidError as ex:
             self.plaid_error = ex
@@ -327,6 +333,22 @@ def main():
                 print("%50s: *** re-run with: ***" % "")
                 print("%50s: --update '%s'" % ("", account_name))
                 print("%50s: to fix" % "")
+
+    # check for any out of date accounts
+    for account_name, sync in results.items():
+        if not sync.item_info:
+            continue
+
+        now = datetime.datetime.now(tz=datetime.timezone.utc)
+
+        if sync.item_info.ts_last_failed_update > sync.item_info.ts_last_successful_update:
+            print("%-50s: Last attempt failed!  Last failure: %s  Last success: %s" % (
+                account_name, sync.item_info.ts_last_failed_update, sync.item_info.ts_last_successful_update
+            ))
+        elif sync.item_info.ts_last_successful_update < (now - datetime.timedelta(days=3)):
+            print("%-50s: Last successful update > 3 days ago!  Last failure: %s  Last success: %s" % (
+                account_name, sync.item_info.ts_last_failed_update, sync.item_info.ts_last_successful_update
+            ))
 
 if __name__ == '__main__':
     main()

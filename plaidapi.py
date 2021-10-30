@@ -24,6 +24,7 @@ class AccountBalance:
 class AccountInfo:
     def __init__(self, data):
         self.raw_data = data
+        self.item_id                   = data['item']['item_id']
         self.institution_id            = data['item']['institution_id']
         self.ts_consent_expiration     = parse_optional_iso8601_timestamp(data['item']['consent_expiration_time'])
         self.ts_last_failed_update     = parse_optional_iso8601_timestamp(data['status']['transactions']['last_failed_update'])
