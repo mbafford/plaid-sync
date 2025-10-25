@@ -1,1 +1,1 @@
-plaid-python==7.1.0
+plaid-python>=30.0.0

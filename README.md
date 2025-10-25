@@ -40,9 +40,9 @@ sync mortgage or brokerage transactions. It does work fine with all of the credi
 
 Developed for Python 3.7.4.
 
-There is only one mandatory external dependency, the Plaid API (`plaid-python==7.1.0`).
+The main dependency is the Plaid API (`plaid-python>=30.0.0`). This version is required for personal finance categories and other modern Plaid features.
 
-There is one optional depenency, [`tqdm`](https://github.com/tqdm/tqdm), if you want fancy progress bars during syncing. If you don't install it, you just get unfancy print
+There is one optional dependency, [`tqdm`](https://github.com/tqdm/tqdm), if you want fancy progress bars during syncing. If you don't install it, you just get unfancy print
 messages. My current account load takes about 4 seconds to sync.
 
 This is not set up to be run/installed as a command line program, but could be easily done so.
@@ -76,7 +76,9 @@ dbfile = /tmp/sandbox.db
 
 Once you've set up the basic credentials, run through linking a new account:
 
-```$ ./plaid-sync.py -c config/sandbox --link 'Test Chase'
+```
+$ ./plaid-sync.py -c config/sandbox --link-account 'Test Chase'
+
 Open the following page in your browser to continue:
     http://127.0.0.1:4583/link.html
 ```
@@ -85,7 +87,8 @@ Open the above link, follow the instructions (click the button, find your bank, 
 
 The console will then update with confirmation:
 
-```Public token obtained [public-sandbox-XXXX]. Exchanging for access token.
+```
+Public token obtained [public-sandbox-XXXX]. Exchanging for access token.
 Access token received: access-sandbox-XXXX
 
 Saving new link to configuration file
@@ -107,16 +110,34 @@ And you can now run the sync process:
 ```
 $ ./plaid-sync.py -c config/sandbox
                                                                                        
-Finished syncing 2 Plaid accounts
+Finished syncing 2 Plaid accounts using cursor-based sync
 
 Test Chase : 16 new transactions (0 pending),  0 archived transactions over 5 accounts
+```
+
+The sync process now uses Plaid's cursor-based `/sync` endpoint by default. If you want to use this project's original
+date-range based sync you can supply the argument `--date-range-sync`
+
+```
+$ ./plaid-sync.py -c config/sandbox --date-range-sync -s "2025-08-21" -e "2025-09-21"
+```
+
+Included is a script `./show_recent.sh` to quickly check the recent transactions saved in the database file.
+
+```
+$ ./show_recent.sh sandbox.db
+
+2025-09-21T14:34:26Z|Uber 063015 SF**POOL**|5.4
+2025-09-21T14:34:26Z|United Airlines|-500.0
+2025-09-21T14:34:26Z|McDonald's|12.0
 ```
 
 ## Updating an Expired Account
 
 Occasionally you'll get an error like this while syncing:
 
-```./plaid-sync.py -c config/sandbox                       
+```
+./plaid-sync.py -c config/sandbox                       
 
 Finished syncing 2 Plaid accounts
 
