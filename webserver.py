@@ -12,6 +12,7 @@ import json
 import logging
 import mimetypes
 import sys
+import ssl
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Dict
 
@@ -82,7 +83,7 @@ class PlaidLinkHTTPServer(BaseHTTPRequestHandler):
             self.send_404()
 
 
-def serve(env: str, clientName: str, token: str, pageTitle: str, accountName: str, type: str) -> Dict:
+def serve(env: str, clientName: str, token: str, pageTitle: str, accountName: str, type: str, ssl_config: Dict) -> Dict:
     """
     Starts a webserver and serves the html/link.html file with the
     specified configuration.
@@ -108,9 +109,17 @@ def serve(env: str, clientName: str, token: str, pageTitle: str, accountName: st
         return PlaidLinkHTTPServer(ds, *args, **kwargs)
 
     with ThreadingHTTPServer(('127.0.0.1', 4583), make_handler) as httpd:
+        scheme = 'http'
         host, port = httpd.socket.getsockname()
+
+        if ssl_config:
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.load_cert_chain(certfile=ssl_config['cert'], keyfile=ssl_config['key'])
+            httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
+            scheme = 'https'
+
         print('Open the following page in your browser to continue:')
-        print(f'    http://{host}:{port}/link.html')
+        print(f'    {scheme}://{host}:{port}/link.html')
 
         try:
             # well, until the API to shutdown is called

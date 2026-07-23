@@ -12,6 +12,8 @@ suppress_warnings=true
 
 [plaid-sync]
 dbfile = /data/transactions.db
+ssl_cert = cert.pem
+ssl_key = key.pem
 
 [Account1]
 access_token = access-development-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
@@ -45,6 +47,12 @@ class Config:
 
     def get_dbfile(self) -> str:
         return self.config['plaid-sync']['dbfile']
+
+    def get_ssl_config(self) -> dict:
+        cert = self.config['plaid-sync'].get('ssl_cert')
+        key = self.config['plaid-sync'].get('ssl_key')
+        if cert and key:
+            return {'cert': cert, 'key': key}
 
     def get_all_config_sections(self) -> str:
         """
