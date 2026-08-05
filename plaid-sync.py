@@ -400,6 +400,7 @@ def update_account(cfg: config.Config, plaid: plaidapi.PlaidAPI, account_name: s
             type="update",
             accountName=account_name,
             token=link_token,
+            ssl_config=cfg.get_ssl_config(),
         )
 
         if "public_token" not in plaid_response:
