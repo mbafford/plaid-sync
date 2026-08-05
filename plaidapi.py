@@ -306,7 +306,7 @@ class PlaidAPI:
             # Add transactions from this batch
             batch_added = [Transaction(t) for t in response_dict.get("added", [])]
             batch_modified = [Transaction(t) for t in response_dict.get("modified", [])]
-            batch_removed = response_dict.get("removed", [])
+            batch_removed = [removed['transaction_id'] for removed in response_dict.get("removed", [])]
 
             all_added.extend(batch_added)
             all_modified.extend(batch_modified)
