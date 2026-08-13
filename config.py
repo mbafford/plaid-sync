@@ -59,6 +59,29 @@ class Config:
         """
         return int(self.config['plaid-sync'].get('days_requested', 730))
 
+    def get_additional_consented_products(self, account_name: str = None) -> list:
+        """
+        Extra Plaid products to consent to when linking or updating an account,
+        beyond 'transactions'. Comma separated:
+
+            [Vanguard]
+            additional_consented_products = investments
+
+        Investments carry their own user consent, so an item linked without them
+        answers ADDITIONAL_CONSENT_REQUIRED to every investments call. Re-running
+        --update-account with this set upgrades consent in place and keeps the
+        item_id, the cursor, and the stored transaction ids.
+
+        Reads the account's section first and falls back to [plaid-sync], so
+        investments can be enabled only for the logins that hold brokerages.
+        """
+        raw = None
+        if account_name and self.config.has_section(account_name):
+            raw = self.config[account_name].get('additional_consented_products')
+        if raw is None:
+            raw = self.config['plaid-sync'].get('additional_consented_products', '')
+        return [p.strip() for p in raw.split(',') if p.strip()]
+
     def get_ssl_config(self) -> dict:
         cert = self.config['plaid-sync'].get('ssl_cert')
         key = self.config['plaid-sync'].get('ssl_key')

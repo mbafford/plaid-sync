@@ -20,6 +20,13 @@ from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUse
 from plaid.model.transactions_get_request_options import TransactionsGetRequestOptions
 from plaid.model.transactions_sync_request import TransactionsSyncRequest
 from plaid.model.sandbox_item_reset_login_request import SandboxItemResetLoginRequest
+from plaid.model.investments_transactions_get_request import (
+    InvestmentsTransactionsGetRequest,
+)
+from plaid.model.investments_transactions_get_request_options import (
+    InvestmentsTransactionsGetRequestOptions,
+)
+from plaid.model.investments_holdings_get_request import InvestmentsHoldingsGetRequest
 
 
 class AccountBalance:
@@ -41,6 +48,9 @@ class AccountInfo:
         self.raw_data = data
         self.item_id = data["item"]["item_id"]
         self.institution_id = data["item"]["institution_id"]
+        # Products the user consented to. Checked before an investments call,
+        # which otherwise fails ADDITIONAL_CONSENT_REQUIRED.
+        self.consented_products = list(data["item"].get("consented_products") or [])
         self.ts_consent_expiration = data["item"]["consent_expiration_time"]
         self.ts_last_failed_update = data["status"]["transactions"][
             "last_failed_update"
@@ -70,6 +80,66 @@ class Transaction:
             self.amount,
             self.currency_code,
         )
+
+
+class InvestmentTransaction:
+    """A buy, sell, dividend, fee or transfer inside a brokerage/IRA account.
+
+    Distinct from Transaction: it carries a security_id, a share quantity and a
+    price, and its identifier is investment_transaction_id. Kept as a separate
+    type (and a separate table) so the plain-cash transaction stream downstream
+    consumers read is not polluted with share lots.
+    """
+
+    def __init__(self, data):
+        self.raw_data = data
+        self.account_id = data["account_id"]
+        self.investment_transaction_id = data["investment_transaction_id"]
+        self.security_id = data.get("security_id")
+        self.date = data["date"]
+        self.name = data.get("name")
+        self.quantity = data.get("quantity")
+        self.amount = data.get("amount")
+        self.price = data.get("price")
+        self.fees = data.get("fees")
+        self.type = data.get("type")
+        self.subtype = data.get("subtype")
+        self.currency_code = data.get("iso_currency_code")
+
+    def __str__(self):
+        return "%s %s %s - %s @ %s" % (
+            self.date,
+            self.investment_transaction_id,
+            self.name,
+            self.quantity,
+            self.price,
+        )
+
+
+class Security:
+    """A tradable instrument referenced by an InvestmentTransaction or holding."""
+
+    def __init__(self, data):
+        self.raw_data = data
+        self.security_id = data["security_id"]
+        self.name = data.get("name")
+        self.ticker_symbol = data.get("ticker_symbol")
+        self.type = data.get("type")
+        self.currency_code = data.get("iso_currency_code")
+
+
+class Holding:
+    """A current position: how many shares of a security an account holds."""
+
+    def __init__(self, data):
+        self.raw_data = data
+        self.account_id = data["account_id"]
+        self.security_id = data["security_id"]
+        self.quantity = data.get("quantity")
+        self.cost_basis = data.get("cost_basis")
+        self.institution_price = data.get("institution_price")
+        self.institution_value = data.get("institution_value")
+        self.currency_code = data.get("iso_currency_code")
 
 
 def parse_optional_iso8601_timestamp(ts: Optional[str]) -> datetime.datetime:
@@ -143,7 +213,8 @@ class PlaidAPI:
 
     @wrap_plaid_error
     def get_link_token(self, access_token=None, user_id="user",
-                       days_requested=None) -> str:
+                       days_requested=None,
+                       additional_consented_products=None) -> str:
         """
         Calls the /link/token/create workflow, which returns an access token
         which can be used to initate the account linking process or, if an access_token
@@ -176,6 +247,14 @@ class PlaidAPI:
             req_data["transactions"] = LinkTokenTransactions(
                 days_requested=days_requested
             )
+
+        # Products the user consents to beyond the one being linked. Valid in
+        # update mode too, which is how an existing item gains investments access
+        # without being re-linked.
+        if additional_consented_products:
+            req_data["additional_consented_products"] = [
+                Products(p) for p in additional_consented_products
+            ]
 
         req = LinkTokenCreateRequest(**req_data)
         response = self.client.link_token_create(req)
@@ -274,6 +353,83 @@ class PlaidAPI:
             offset += count
 
         return ret
+
+    @wrap_plaid_error
+    def get_investment_transactions(
+        self,
+        access_token: str,
+        start_date: datetime.date,
+        end_date: datetime.date,
+        status_callback=None,
+    ):
+        """
+        Fetch investment activity (buys, sells, dividends, fees, transfers) for
+        every investment account on this item.
+
+        There is no cursor-based equivalent of /transactions/sync for
+        investments, so this is a date range and callers re-fetch the whole
+        window each run. That is safe: storage upserts on
+        investment_transaction_id, which is stable for the life of the item.
+
+        Returns {'transactions': [InvestmentTransaction], 'securities': [Security]}.
+        Securities come back as a separate list keyed by security_id -- the
+        transactions only reference them by id, so both must be stored to make
+        sense of a lot later.
+        """
+        transactions = []
+        securities = {}
+        offset = 0
+        count = 500  # Plaid's maximum page size
+
+        while True:
+            req = InvestmentsTransactionsGetRequest(
+                access_token=access_token,
+                start_date=start_date,
+                end_date=end_date,
+                options=InvestmentsTransactionsGetRequestOptions(
+                    count=count, offset=offset
+                ),
+            )
+            response = self.client.investments_transactions_get(req).to_dict()
+
+            batch = [
+                InvestmentTransaction(t)
+                for t in response.get("investment_transactions", [])
+            ]
+            transactions += batch
+            for security in response.get("securities", []):
+                securities[security["security_id"]] = Security(security)
+
+            total = response.get("total_investment_transactions", len(transactions))
+            if status_callback:
+                status_callback(len(transactions), total)
+
+            if len(batch) < count or len(transactions) >= total:
+                break
+            offset += count
+
+        return {
+            "transactions": transactions,
+            "securities": list(securities.values()),
+        }
+
+    @wrap_plaid_error
+    def get_investment_holdings(self, access_token: str):
+        """
+        Current positions per investment account, with the securities they name.
+
+        Holdings are a point-in-time snapshot rather than a history, which is
+        what makes them useful for a retirement account: even where Plaid can
+        offer no transaction history, the holding still anchors a Beancount
+        balance assertion.
+        """
+        response = self.client.investments_holdings_get(
+            InvestmentsHoldingsGetRequest(access_token=access_token)
+        ).to_dict()
+        return {
+            "holdings": [Holding(h) for h in response.get("holdings", [])],
+            "securities": [Security(s) for s in response.get("securities", [])],
+        }
 
     @wrap_plaid_error
     def sync_transactions(

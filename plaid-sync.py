@@ -129,6 +129,8 @@ class PlaidSynchronizer:
         self.plaid_error = None
         self.item_info = None
         self.counts = SyncCounts(0, 0, 0, 0, 0, 0)
+        self.investment_counts = None
+        self.investment_error = None
 
     def add_transactions(self, transactions):
         self.transactions.update(
@@ -144,7 +146,7 @@ class PlaidSynchronizer:
             ]
         )
 
-    def sync_with_cursor(self, fetch_balances=True, verbose=False):
+    def sync_with_cursor(self, days_requested, fetch_balances=True, verbose=False):
         """
         Sync transactions using Plaid's /transactions/sync endpoint with cursor-based pagination.
         This is more efficient than date-range syncing as it only fetches updates.
@@ -255,20 +257,99 @@ class PlaidSynchronizer:
             # Save the cursor for next sync
             self.db.save_sync_cursor(self.item_info.item_id, sync_result["cursor"])
 
+            self.sync_investments(days_requested=days_requested, verbose=verbose)
+
         except plaidapi.PlaidError as ex:
             self.plaid_error = ex
+
+    def sync_investments(self, days_requested: int, verbose=False):
+        """
+        Pull brokerage/IRA activity and positions, if this item consented to the
+        investments product.
+
+        Investments are a separate Plaid product from transactions with their own
+        consent, so most items skip this entirely. Failures here are recorded but
+        never raised: an item's cash transactions have already been stored by the
+        time this runs, and losing those to a brokerage-side error would be a bad
+        trade. Grant consent with:
+
+            [Account Name]
+            additional_consented_products = investments
+
+        then re-run --update-account for that account.
+        """
+        if "investments" not in self.item_info.consented_products:
+            if verbose:
+                print("    Investments not consented for this item — skipping")
+            return
+
+        end_date = datetime.datetime.now().date()
+        start_date = end_date - datetime.timedelta(days=days_requested)
+
+        try:
+            if verbose:
+                print(f"    Fetching investment transactions since {start_date}")
+            result = self.plaid.get_investment_transactions(
+                access_token=self.access_token,
+                start_date=start_date,
+                end_date=end_date,
+                status_callback=(lambda c, t: print("        %d/%d fetched" % (c, t)))
+                if verbose
+                else None,
+            )
+
+            investment_transactions = self.keep(result["transactions"])
+
+            # Securities first: transactions reference them by id, and storing
+            # them in this order means the DB is never briefly inconsistent.
+            # Securities are item-wide reference data, not per-account, so they
+            # are stored unfiltered.
+            for security in result["securities"]:
+                self.db.save_security(security)
+            for transaction in investment_transactions:
+                self.db.save_investment_transaction(transaction)
+
+            if verbose:
+                print("     Fetching investment holdings")
+            holdings = self.plaid.get_investment_holdings(self.access_token)
+            kept_holdings = self.keep(holdings["holdings"])
+            for security in holdings["securities"]:
+                self.db.save_security(security)
+            for holding in kept_holdings:
+                self.db.save_holding(holding)
+
+            self.investment_counts = (
+                len(investment_transactions),
+                len(kept_holdings),
+            )
+
+            if verbose:
+                print(
+                    "    Saved %d investment transactions, %d holdings"
+                    % self.investment_counts
+                )
+
+        except plaidapi.PlaidError as ex:
+            self.investment_error = ex
+            if verbose:
+                print("    Investments unavailable: %s" % ex)
 
     def sync(
         self,
         start_date,
         end_date,
+        days_requested,
         fetch_balances=True,
         verbose=False,
         use_cursor_sync=True,
     ):
         # New default sync method using plaid's /transactions/sync endpoint
         if use_cursor_sync:
-            return self.sync_with_cursor(fetch_balances=fetch_balances, verbose=verbose)
+            return self.sync_with_cursor(
+                days_requested=days_requested,
+                fetch_balances=fetch_balances,
+                verbose=verbose,
+            )
 
         # Original date-range based sync method
         try:
@@ -387,9 +468,14 @@ def update_account(cfg: config.Config, plaid: plaidapi.PlaidAPI, account_name: s
                 # so just ignore and proceed
                 pass
 
+        extra_products = cfg.get_additional_consented_products(account_name)
+        if extra_products:
+            print("Also requesting consent for: %s" % ", ".join(extra_products))
+
         link_token = plaid.get_link_token(
             access_token=cfg.get_account_access_token(account_name),
             days_requested=cfg.get_days_requested(),
+            additional_consented_products=extra_products,
         )
 
         import webserver
@@ -437,7 +523,12 @@ def link_account(cfg: config.Config, plaid: plaidapi.PlaidAPI, account_name: str
         sys.exit(1)
 
     # need the special token to initiate a link attempt
-    link_token = plaid.get_link_token(days_requested=cfg.get_days_requested())
+    # A new account has no config section yet, so only the [plaid-sync] default
+    # applies here; per-account extras take effect on a later --update-account.
+    link_token = plaid.get_link_token(
+        days_requested=cfg.get_days_requested(),
+        additional_consented_products=cfg.get_additional_consented_products(account_name),
+    )
 
     import webserver
 
@@ -528,6 +619,7 @@ def main():
             sync.sync(
                 args.start_date,
                 args.end_date,
+                days_requested=cfg.get_days_requested(),
                 fetch_balances=args.balances,
                 verbose=args.verbose,
                 use_cursor_sync=False,
@@ -536,6 +628,7 @@ def main():
             sync.sync(
                 start_date=None,  # Not used in cursor sync
                 end_date=None,  # Not used in cursor sync
+                days_requested=cfg.get_days_requested(),
                 fetch_balances=args.balances,
                 verbose=args.verbose,
                 use_cursor_sync=True,
@@ -573,6 +666,16 @@ def main():
                 sync.counts.accounts,
             )
         )
+
+        if sync.investment_counts:
+            investment_transactions, holdings = sync.investment_counts
+            print(
+                "%50s: %2d investment transactions, %d holdings"
+                % ("", investment_transactions, holdings)
+            )
+
+        if sync.investment_error:
+            print("%50s: investments unavailable: %s" % ("", sync.investment_error))
 
         if sync.plaid_error:
             import textwrap
