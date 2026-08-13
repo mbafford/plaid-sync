@@ -10,6 +10,7 @@ from plaid.model.item_public_token_exchange_request import (
     ItemPublicTokenExchangeRequest,
 )
 from plaid.model.link_token_create_request import LinkTokenCreateRequest
+from plaid.model.link_token_transactions import LinkTokenTransactions
 from plaid.model.item_get_request import ItemGetRequest
 from plaid.model.country_code import CountryCode
 from plaid.model.products import Products
@@ -141,7 +142,8 @@ class PlaidAPI:
         self.client = plaid_api.PlaidApi(api_client)
 
     @wrap_plaid_error
-    def get_link_token(self, access_token=None, user_id="user") -> str:
+    def get_link_token(self, access_token=None, user_id="user",
+                       days_requested=None) -> str:
         """
         Calls the /link/token/create workflow, which returns an access token
         which can be used to initate the account linking process or, if an access_token
@@ -167,6 +169,13 @@ class PlaidAPI:
             req_data["access_token"] = access_token
         else:
             req_data["products"] = [Products("transactions")]
+
+        # How far back Plaid fetches history for this item. Valid when linking and
+        # when updating; omitting it lets Plaid apply its 90-day default.
+        if days_requested:
+            req_data["transactions"] = LinkTokenTransactions(
+                days_requested=days_requested
+            )
 
         req = LinkTokenCreateRequest(**req_data)
         response = self.client.link_token_create(req)

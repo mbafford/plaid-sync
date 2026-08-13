@@ -388,7 +388,8 @@ def update_account(cfg: config.Config, plaid: plaidapi.PlaidAPI, account_name: s
                 pass
 
         link_token = plaid.get_link_token(
-            access_token=cfg.get_account_access_token(account_name)
+            access_token=cfg.get_account_access_token(account_name),
+            days_requested=cfg.get_days_requested(),
         )
 
         import webserver
@@ -436,7 +437,7 @@ def link_account(cfg: config.Config, plaid: plaidapi.PlaidAPI, account_name: str
         sys.exit(1)
 
     # need the special token to initiate a link attempt
-    link_token = plaid.get_link_token()
+    link_token = plaid.get_link_token(days_requested=cfg.get_days_requested())
 
     import webserver
 

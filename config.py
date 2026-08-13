@@ -12,6 +12,7 @@ suppress_warnings=true
 
 [plaid-sync]
 dbfile = /data/transactions.db
+days_requested = 730
 ssl_cert = cert.pem
 ssl_key = key.pem
 
@@ -47,6 +48,16 @@ class Config:
 
     def get_dbfile(self) -> str:
         return self.config['plaid-sync']['dbfile']
+
+    def get_days_requested(self) -> int:
+        """
+        Days of transaction history to request when linking or updating an account.
+
+        Plaid defaults to 90 and allows up to 730. The value applies only at
+        link/update time, since that is when Plaid decides how far back to fetch;
+        raising it later requires re-running --update-account for the account.
+        """
+        return int(self.config['plaid-sync'].get('days_requested', 730))
 
     def get_ssl_config(self) -> dict:
         cert = self.config['plaid-sync'].get('ssl_cert')
