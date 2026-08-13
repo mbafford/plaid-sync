@@ -82,6 +82,26 @@ class Config:
             raw = self.config['plaid-sync'].get('additional_consented_products', '')
         return [p.strip() for p in raw.split(',') if p.strip()]
 
+    def get_included_accounts(self, account_name: str = None) -> list:
+        """
+        Restrict which of an item's accounts get stored. Comma separated; empty,
+        the default, stores every account.
+
+            [Vanguard]
+            accounts = 8695, 6200
+
+        One login often exposes accounts you have no interest in tracking -- a
+        joint account, a rolled-over IRA sitting at zero. Plaid returns them all.
+
+        Entries may be the four-digit mask, which is what a statement shows, or a
+        full Plaid account_id. Masks resolve against the balances response, so
+        they need the -b fetch.
+        """
+        if not account_name or not self.config.has_section(account_name):
+            return []
+        raw = self.config[account_name].get('accounts', '')
+        return [a.strip() for a in raw.split(',') if a.strip()]
+
     def get_ssl_config(self) -> dict:
         cert = self.config['plaid-sync'].get('ssl_cert')
         key = self.config['plaid-sync'].get('ssl_key')

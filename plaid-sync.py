@@ -120,6 +120,7 @@ class PlaidSynchronizer:
         plaid: plaidapi.PlaidAPI,
         account_name: str,
         access_token: str,
+        included_accounts=None,
     ):
         self.transactions = {}
         self.db = db
@@ -131,6 +132,55 @@ class PlaidSynchronizer:
         self.counts = SyncCounts(0, 0, 0, 0, 0, 0)
         self.investment_counts = None
         self.investment_error = None
+        # Masks and/or account_ids from config; empty stores every account.
+        self.included_accounts = list(included_accounts or [])
+        # Resolved account_ids, or None for "no filter". Set once balances arrive.
+        self.allowed_account_ids = None
+
+    def resolve_included_accounts(self, balances, verbose=False):
+        """Turn the configured masks/account_ids into a set of account_ids.
+
+        Masks are what a statement shows and what a human will actually type, but
+        only the balances response carries them, so resolution happens here rather
+        than in config. A configured account that matches nothing is called out:
+        silently syncing everything would defeat the point of the setting.
+        """
+        if not self.included_accounts:
+            return
+
+        wanted = set(self.included_accounts)
+        allowed, matched = set(), set()
+        for balance in balances or []:
+            for key in (balance.account_id, balance.account_number):
+                if key and str(key) in wanted:
+                    allowed.add(balance.account_id)
+                    matched.add(str(key))
+
+        # An account_id can be honoured without balances; a mask cannot.
+        for entry in wanted - matched:
+            if len(entry) > 12:
+                allowed.add(entry)
+                matched.add(entry)
+
+        for entry in sorted(wanted - matched):
+            print(
+                "    WARNING: configured account [%s] matched nothing on %s"
+                % (entry, self.account_name),
+                file=sys.stderr,
+            )
+
+        self.allowed_account_ids = allowed
+        if verbose:
+            print(
+                "    Storing %d of %d accounts (filtered by config)"
+                % (len(allowed), len(balances or []))
+            )
+
+    def keep(self, records):
+        """Drop anything belonging to an account the config excludes."""
+        if self.allowed_account_ids is None:
+            return records
+        return [r for r in records if r.account_id in self.allowed_account_ids]
 
     def add_transactions(self, transactions):
         self.transactions.update(
@@ -158,10 +208,15 @@ class PlaidSynchronizer:
             self.item_info = self.plaid.get_item_info(self.access_token)
 
             balances = None
-            if fetch_balances:
+            if fetch_balances or self.included_accounts:
+                # Balances also resolve configured masks to account_ids, so fetch
+                # them either way; they are only stored if the caller asked.
                 if verbose:
                     print("     Fetching current balances")
                 balances = self.plaid.get_account_balance(self.access_token)
+
+            self.resolve_included_accounts(balances, verbose=verbose)
+            balances = self.keep(balances) if fetch_balances else None
 
             last_cursor = self.db.get_last_sync_cursor(self.item_info.item_id)
 
@@ -186,8 +241,10 @@ class PlaidSynchronizer:
             )
 
             # Process added transactions
-            added_transactions = sync_result["added"]
-            modified_transactions = sync_result["modified"]
+            # Filter here rather than at save time, so the reported counts
+            # describe what was actually stored.
+            added_transactions = self.keep(sync_result["added"])
+            modified_transactions = self.keep(sync_result["modified"])
             removed_transaction_ids = sync_result["removed"]
 
             self.add_transactions(added_transactions)
@@ -359,10 +416,13 @@ class PlaidSynchronizer:
             self.item_info = self.plaid.get_item_info(self.access_token)
 
             balances = None
-            if fetch_balances:
+            if fetch_balances or self.included_accounts:
                 if verbose:
                     print("     Fetching current balances")
                 balances = self.plaid.get_account_balance(self.access_token)
+
+            self.resolve_included_accounts(balances, verbose=verbose)
+            balances = self.keep(balances) if fetch_balances else None
 
             if verbose:
                 print(
@@ -370,7 +430,7 @@ class PlaidSynchronizer:
                 )
 
             self.add_transactions(
-                self.plaid.get_transactions(
+                self.keep(self.plaid.get_transactions(
                     access_token=self.access_token,
                     start_date=start_date,
                     end_date=end_date,
@@ -379,7 +439,7 @@ class PlaidSynchronizer:
                     )
                     if verbose
                     else None,
-                )
+                ))
             )
 
             account_ids = set(t.account_id for t in self.transactions.values())
@@ -614,7 +674,11 @@ def main():
 
     def process_account(account_name):
         sync = PlaidSynchronizer(
-            db, plaid, account_name, cfg.get_account_access_token(account_name)
+            db,
+            plaid,
+            account_name,
+            cfg.get_account_access_token(account_name),
+            included_accounts=cfg.get_included_accounts(account_name),
         )
         if args.date_range_sync:
             sync.sync(
