@@ -6,7 +6,14 @@ import datetime
 
 from typing import List
 
-from plaidapi import AccountBalance, AccountInfo, Transaction as PlaidTransaction
+from plaidapi import (
+    AccountBalance,
+    AccountInfo,
+    Holding,
+    InvestmentTransaction,
+    Security,
+    Transaction as PlaidTransaction,
+)
 
 
 def build_placeholders(list):
@@ -42,6 +49,41 @@ class TransactionsDB:
                 (item_id, institution_id, consent_expiration, last_failed_update, last_successful_update, updated, plaid_json, cursor)
         """)
         c.execute("create unique index if not exists items_idx ON items(item_id)")
+
+        # Investment activity lives in its own table rather than alongside cash
+        # transactions: it is keyed by investment_transaction_id, carries share
+        # quantities and prices, and consumers of the cash stream should not have
+        # to filter share lots out of it.
+        c.execute("""
+            create table if not exists investment_transactions
+                (account_id, investment_transaction_id, security_id, created, updated, archived, plaid_json)
+            """)
+        c.execute(
+            "create unique index if not exists investment_transactions_idx"
+            " ON investment_transactions(investment_transaction_id)"
+        )
+
+        # Securities are referenced by id from both investment transactions and
+        # holdings, so they are stored once and shared.
+        c.execute("""
+            create table if not exists securities
+                (security_id, ticker_symbol, name, security_type, currency_code, updated, plaid_json)
+            """)
+        c.execute(
+            "create unique index if not exists securities_idx ON securities(security_id)"
+        )
+
+        # Point-in-time positions, one row per (account, security, date) so a
+        # history builds up as syncs run -- enough to anchor balance assertions
+        # for accounts whose transaction history Plaid will not serve.
+        c.execute("""
+            create table if not exists holdings
+                (date, account_id, security_id, quantity, cost_basis, institution_price, institution_value, currency_code, updated, plaid_json)
+            """)
+        c.execute(
+            "create unique index if not exists holdings_idx"
+            " ON holdings(account_id, security_id, date)"
+        )
 
         self.conn.commit()
 
@@ -99,6 +141,88 @@ class TransactionsDB:
                         plaid_json = excluded.plaid_json
         """,
             [transaction.account_id, transaction.transaction_id, data],
+        )
+
+        self.conn.commit()
+
+    def save_investment_transaction(self, transaction: InvestmentTransaction):
+        c = self.conn.cursor()
+        data = json.dumps(transaction.raw_data, default=self.datetime_handler)
+        c.execute(
+            """
+            insert into
+                investment_transactions(account_id, investment_transaction_id, security_id, created, updated, archived, plaid_json)
+                values(?,?,?,strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),null,?)
+                on conflict(investment_transaction_id) DO UPDATE
+                    set updated    = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+                        security_id = excluded.security_id,
+                        plaid_json = excluded.plaid_json
+        """,
+            [
+                transaction.account_id,
+                transaction.investment_transaction_id,
+                transaction.security_id,
+                data,
+            ],
+        )
+
+        self.conn.commit()
+
+    def save_security(self, security: Security):
+        c = self.conn.cursor()
+        data = json.dumps(security.raw_data, default=self.datetime_handler)
+        c.execute(
+            """
+            insert into
+                securities(security_id, ticker_symbol, name, security_type, currency_code, updated, plaid_json)
+                values(?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),?)
+                on conflict(security_id) DO UPDATE
+                    set updated       = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+                        ticker_symbol = excluded.ticker_symbol,
+                        name          = excluded.name,
+                        security_type = excluded.security_type,
+                        currency_code = excluded.currency_code,
+                        plaid_json    = excluded.plaid_json
+        """,
+            [
+                security.security_id,
+                security.ticker_symbol,
+                security.name,
+                security.type,
+                security.currency_code,
+                data,
+            ],
+        )
+
+        self.conn.commit()
+
+    def save_holding(self, holding: Holding):
+        c = self.conn.cursor()
+        data = json.dumps(holding.raw_data, default=self.datetime_handler)
+        c.execute(
+            """
+            insert into
+                holdings(date, account_id, security_id, quantity, cost_basis, institution_price, institution_value, currency_code, updated, plaid_json)
+                values(strftime('%Y-%m-%d', 'now'),?,?,?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),?)
+                on conflict(account_id, security_id, date) DO UPDATE
+                    set updated           = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+                        quantity          = excluded.quantity,
+                        cost_basis        = excluded.cost_basis,
+                        institution_price = excluded.institution_price,
+                        institution_value = excluded.institution_value,
+                        currency_code     = excluded.currency_code,
+                        plaid_json        = excluded.plaid_json
+        """,
+            [
+                holding.account_id,
+                holding.security_id,
+                holding.quantity,
+                holding.cost_basis,
+                holding.institution_price,
+                holding.institution_value,
+                holding.currency_code,
+                data,
+            ],
         )
 
         self.conn.commit()
