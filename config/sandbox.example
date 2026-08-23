@@ -15,5 +15,11 @@ dbfile = /tmp/sandbox.db
 ;
 ; [Friendly Account Name]
 ; access_token = XXXXXXXXXXXX
-; disabled=false 
+; disabled=false
+;
+; optionally limit to specific sub-accounts, by
+; four-digit mask or Plaid account_id; omit to
+; store every account the login exposes:
+;
+; accounts = 8695, 6200 
 
