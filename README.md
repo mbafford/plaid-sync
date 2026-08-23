@@ -72,6 +72,12 @@ dbfile = /tmp/sandbox.db
 ; [Friendly Account Name]
 ; access_token = XXXXXXXXXXXX
 ; disabled=false/true
+;
+; and limit an account to specific sub-accounts by
+; four-digit mask or Plaid account_id -- see
+; "Limiting Which Accounts Are Stored" below:
+;
+; accounts = 8695, 6200
 ```
 
 Once you've set up the basic credentials, run through linking a new account:
@@ -130,6 +136,57 @@ $ ./show_recent.sh sandbox.db
 2025-09-21T14:34:26Z|Uber 063015 SF**POOL**|5.4
 2025-09-21T14:34:26Z|United Airlines|-500.0
 2025-09-21T14:34:26Z|McDonald's|12.0
+```
+
+## Limiting Which Accounts Are Stored
+
+One login often exposes accounts you have no interest in tracking. The sync above stored
+five accounts for `Test Chase`; a Vanguard login might carry a Cash Plus account, a
+brokerage, a joint account and a rolled-over IRA sitting at zero, where only two matter.
+Plaid offers no account filter on its side, so all of them land in the database and every
+query you write afterwards has to exclude them by hand.
+
+An `accounts` entry in the account's own section names the ones to keep:
+
+```
+[Vanguard]
+access_token = access-production-XXXX
+accounts = 8695, 6200
+```
+
+Entries are either the four-digit mask -- the last digits your statement shows -- or a
+full Plaid `account_id`. Run with `-v` to see the filter applied:
+
+```
+$ ./plaid-sync.py -c config/sandbox -v
+
+Account: Vanguard (using cursor-based sync)
+    Fetching item (bank login) info
+     Fetching current balances
+    Storing 2 of 5 accounts (filtered by config)
+```
+
+Masks reach plaid-sync only in the balances response, so balances are fetched whenever
+this option is set even without `-b`. They are still only *stored* if you passed `-b`.
+
+An entry that matches nothing warns rather than quietly storing everything, since a
+typo'd mask is easy to make and silently widening the filter would defeat the setting:
+
+```
+    WARNING: configured account [9999] matched nothing on Vanguard
+```
+
+Filtering applies to the fetched lists rather than to each save, so the counts printed at
+the end of a sync describe what was actually stored. Balances, transactions -- both the
+cursor and `--date-range-sync` paths -- and investments are all filtered alike. Omit
+`accounts` and every account is stored, as before.
+
+If you would rather name accounts exactly than trust a mask, the ids are in the database
+once you have synced once with `-b`:
+
+```
+$ sqlite3 sandbox.db "select distinct account_id, \
+    json_extract(plaid_json,'$.mask'), json_extract(plaid_json,'$.name') from balances"
 ```
 
 ## Updating an Expired Account
